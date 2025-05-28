@@ -1,0 +1,12 @@
+torch  # Platform-specific install will be handled separately
+torchvision
+torchaudio
+transformers
+datasets
+evaluate
+sentencepiece
+tqdm
+pandas
+matplotlib
+seaborn
+wandb  # Optional for logging
