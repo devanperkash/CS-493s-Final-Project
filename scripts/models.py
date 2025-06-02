@@ -28,7 +28,7 @@ class TeacherModel():
 
         return sequences, logits
 
-    def get_teacher_y(self, input_text, max_length=50, remove_additional_tokens=False):
+    def get_teacher_y(self, input_text, max_length=None, remove_additional_tokens=True):
         sequences, logits = self._run_teacher_model(input_text, max_length)
         logits = torch.stack(logits, dim=1)[:, :, :len(self.tokenizer)]  if remove_additional_tokens else torch.stack(logits, dim=1) 
 
@@ -37,7 +37,7 @@ class TeacherModel():
     def generate_text(self, input_text, max_length=50):
         sequences, _ = self._run_teacher_model(input_text, max_length)
 
-        return self.tokenizer.decode(sequences[0], skip_special_tokens=True)
+        return [self.tokenizer.decode(sequence, skip_special_tokens=True) for sequence in sequences]
 
 class StudentModel(nn.Module):
     def __init__(self, teacher_tokenizer, emb_dim=512, n_heads=8, n_layers=4, ff_dim=2048, dropout=0.1):
@@ -78,7 +78,7 @@ class StudentModel(nn.Module):
             next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
             generated_ids = torch.cat([generated_ids, next_token_id], dim=1)
 
-        sequences = generated_ids[0]
+        sequences = generated_ids
         logits = all_logits
 
         return sequences, logits
@@ -94,4 +94,4 @@ class StudentModel(nn.Module):
             next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
             generated_ids = torch.cat([generated_ids, next_token_id], dim=1)
 
-        return self.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+        return [self.tokenizer.decode(sequence, skip_special_tokens=True) for sequence in generated_ids]
