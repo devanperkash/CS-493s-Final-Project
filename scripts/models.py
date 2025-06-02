@@ -18,7 +18,7 @@ class TeacherModel():
             outputs = self.model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                max_length=max_length,
+                max_new_tokens=max_length,
                 num_return_sequences=1,
                 output_scores=True,
                 return_dict_in_generate=True
@@ -28,10 +28,11 @@ class TeacherModel():
 
         return sequences, logits
 
-    def get_teacher_y(self, input_text, max_length=50, logit_distillation:bool = False):
+    def get_teacher_y(self, input_text, max_length=50, remove_additional_tokens=False):
         sequences, logits = self._run_teacher_model(input_text, max_length)
+        logits = torch.stack(logits, dim=1)[:, :, :len(self.tokenizer)]  if remove_additional_tokens else torch.stack(logits, dim=1) 
 
-        return logits if logit_distillation else sequences
+        return sequences, logits
 
     def generate_text(self, input_text, max_length=50):
         sequences, _ = self._run_teacher_model(input_text, max_length)
@@ -65,10 +66,25 @@ class StudentModel(nn.Module):
         return logits
 
     def get_student_y_hat(self, input_text, max_length=50):
-        pass # TODO
+        inputs = self.tokenizer(input_text, return_tensors="pt", padding=True)
+        input_ids = inputs["input_ids"]
+        
+        generated_ids = input_ids
+        all_logits = torch.tensor([])
+        for _ in range(max_length):
+            outputs = self.forward(generated_ids)
+            next_token_logits = outputs[:, -1, :]
+            all_logits = torch.cat([all_logits, next_token_logits[:, None, :]], dim=1)
+            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+            generated_ids = torch.cat([generated_ids, next_token_id], dim=1)
+
+        sequences = generated_ids[0]
+        logits = all_logits
+
+        return sequences, logits
 
     def generate_text(self, input_text, max_length=50):
-        inputs = self.tokenizer(input_text, return_tensors="pt")
+        inputs = self.tokenizer(input_text, return_tensors="pt", padding=True)
         input_ids = inputs["input_ids"]
         
         generated_ids = input_ids
