@@ -110,6 +110,7 @@ def test():
 
 
 if __name__ == "__main__":
-    #train_student(logits_distillation=True)
+    #train_student(logits_distillation=True) # logits distillation
+    #train_student(logits_distillation=False) # label distillation
     test()
 
