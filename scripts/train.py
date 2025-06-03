@@ -30,6 +30,7 @@ def train_student(logits_distillation:bool = False):
     # Prep for training
     T = 1.0  # distillation temperature; can raise to 2.0 or 4.0 for “softer” teacher probs
     loss_func = nn.KLDivLoss(reduction="batchmean")
+    ce_loss_func = nn.CrossEntropyLoss()
     optimizer = optim.Adam(student_model.parameters(), lr=1e-4)
 
     # Run models
@@ -37,35 +38,44 @@ def train_student(logits_distillation:bool = False):
         total_loss = 0.0
 
         for batch in train_loader:
-            #
-            # a) Teacher forward (no grads):
-            #
-            with torch.no_grad():
-                t_seqs, t_logits = teacher_model.get_teacher_y(batch, max_length=50)
-                # t_logits: shape (B, gen_len, V)
-                t_logits = t_logits.to(device)
+            if logits_distillation:
+                # a) Teacher forward (no grads):
+                with torch.no_grad():
+                    t_seqs, t_logits = teacher_model.get_teacher_y(batch, max_length=50)
+                    t_logits = t_logits.to(device)
 
-            #
-            # b) Student forward (grad OK):
-            #
-            s_seqs, s_logits = student_model.get_student_y_hat(batch, max_length=50)
-            # s_logits: shape (B, gen_len, V)
-            s_logits = s_logits.to(device)
+                # b) Student forward (grad OK):
+                s_seqs, s_logits = student_model.get_student_y_hat(batch, max_length=50)
+                s_logits = s_logits.to(device)
 
-            #
-            # c) Flatten and compute distillation loss:
-            #
-            B, L, V = t_logits.size()
-            t_flat = t_logits.view(B * L, V)  # (B*L, V)
-            s_flat = s_logits.view(B * L, V)  # (B*L, V)
+                # c) Flatten and compute distillation loss:
+                B, L, V = t_logits.size()
+                t_flat = t_logits.view(B * L, V)  # (B*L, V)
+                s_flat = s_logits.view(B * L, V)  # (B*L, V)
 
-            teacher_probs    = torch.softmax(t_flat / T, dim=-1).detach()
-            student_logprobs = torch.log_softmax(s_flat / T, dim=-1)
-            loss = loss_func(student_logprobs, teacher_probs) * (T * T)
+                teacher_probs    = torch.softmax(t_flat / T, dim=-1).detach()
+                student_logprobs = torch.log_softmax(s_flat / T, dim=-1)
+                loss = loss_func(student_logprobs, teacher_probs) * (T * T)
+            else:
+                # a) Teacher generates token ids (no grads):
+                with torch.no_grad():
+                    t_seqs, _ = teacher_model.get_teacher_y(batch, max_length=50)
+                    t_seqs = t_seqs.to(device)
 
-            #
-            # d) Back‐prop & optimizer step:
-            #
+                # b) Student forward (grad OK):
+                s_seqs, s_logits = student_model.get_student_y_hat(batch, max_length=50)
+                s_logits = s_logits.to(device)
+
+                # c) Compute cross-entropy loss:
+                # s_logits: (B, L, V), t_seqs: (B, L+input_len)
+                # We want to align the generated tokens (after input prompt)
+                # For simplicity, align on the last L tokens
+                # (Assumes input prompt is same for both)
+                B, L, V = s_logits.size()
+                # Use the last L tokens from t_seqs as targets
+                targets = t_seqs[:, -L:]
+                loss = ce_loss_func(s_logits.view(B * L, V), targets.reshape(B * L))
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -73,7 +83,7 @@ def train_student(logits_distillation:bool = False):
             total_loss += loss.item()
 
         avg_loss = total_loss / len(train_loader)
-        print(f"Epoch {epoch}   Avg KL loss: {avg_loss:.5f}")
+        print(f"Epoch {epoch}   Avg {'KL' if logits_distillation else 'CE'} loss: {avg_loss:.5f}")
 
         #
         # e) Example: generate one batch from `val_loader`
