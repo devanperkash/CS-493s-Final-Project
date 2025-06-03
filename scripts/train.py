@@ -1,47 +1,94 @@
 from dataloader import load_hellaswag, load_gsm8k
 from distill_utils import get_device, count_parameters
 from models import TeacherModel, StudentModel
+import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.data import DataLoader
 
 def train_student(logits_distillation:bool = False):
-    # device = get_device()
-    # print(f"Running on: {device}")
+    device = get_device()
+    print(f"Running on: {device}")
 
     # Load data
-    #subset_train, subset_val = load_hellaswag(3)
     subset_train, subset_val = load_gsm8k(3)
+    train_loader = DataLoader(subset_train, batch_size=8, shuffle=True)
+    val_loader   = DataLoader(subset_val,   batch_size=8, shuffle=False)
 
-    # Get models setup
-    teacher_model = TeacherModel("deepseek-ai/deepseek-coder-1.3b-base") #deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
-    student_model = StudentModel(teacher_model.tokenizer)
+    # Get models set up
+    teacher_model = TeacherModel("deepseek-ai/deepseek-coder-1.3b-base")
+    teacher_model.model.to(device)
+    teacher_model.model.eval()
+
+    student_model = StudentModel(teacher_model.tokenizer).to(device)
+    student_model.train()
 
     print('Vocab length:', len(teacher_model.tokenizer))
     print("Size of student model (# of params):")
     count_parameters(student_model)
 
     # Prep for training
-    loss_func = nn.KLDivLoss()
-    optimizer = optim.Adam(student_model.parameters())
+    T = 1.0  # distillation temperature; can raise to 2.0 or 4.0 for “softer” teacher probs
+    loss_func = nn.KLDivLoss(reduction="batchmean")
+    optimizer = optim.Adam(student_model.parameters(), lr=1e-4)
 
     # Run models
-    for i in range(5):
-        t_seqs, t_logits = teacher_model.get_teacher_y(subset_train)
-        s_seqs, s_logits = student_model.get_student_y_hat(subset_train)
+    for epoch in range(5):
+        total_loss = 0.0
 
-        optimizer.zero_grad()
-        loss = loss_func(t_logits, s_logits)
-        loss.backward()
-        optimizer.step()
+        for batch in train_loader:
+            #
+            # a) Teacher forward (no grads):
+            #
+            with torch.no_grad():
+                t_seqs, t_logits = teacher_model.get_teacher_y(batch, max_length=50)
+                # t_logits: shape (B, gen_len, V)
+                t_logits = t_logits.to(device)
 
-        print(i, loss)
+            #
+            # b) Student forward (grad OK):
+            #
+            s_seqs, s_logits = student_model.get_student_y_hat(batch, max_length=50)
+            # s_logits: shape (B, gen_len, V)
+            s_logits = s_logits.to(device)
 
-        print("Example:")
-        print(teacher_model.generate_text(subset_val[0]))
+            #
+            # c) Flatten and compute distillation loss:
+            #
+            B, L, V = t_logits.size()
+            t_flat = t_logits.view(B * L, V)  # (B*L, V)
+            s_flat = s_logits.view(B * L, V)  # (B*L, V)
+
+            teacher_probs    = torch.softmax(t_flat / T, dim=-1).detach()
+            student_logprobs = torch.log_softmax(s_flat / T, dim=-1)
+            loss = loss_func(student_logprobs, teacher_probs) * (T * T)
+
+            #
+            # d) Back‐prop & optimizer step:
+            #
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(train_loader)
+        print(f"Epoch {epoch}   Avg KL loss: {avg_loss:.5f}")
+
+        #
+        # e) Example: generate one batch from `val_loader`
+        #
+        student_model.eval()
+        with torch.no_grad():
+            sample_batch = next(iter(val_loader))
+            teacher_out = teacher_model.generate_text(sample_batch, max_length=50)
+            student_out = student_model.generate_text(sample_batch, max_length=50)
+
+        print("Teacher says (first example):", teacher_out[0])
+        print("Student says (first example):", student_out[0])
         print("---")
-        print(student_model.generate_text(subset_val[0]))
-        print("---")
 
+        student_model.train()
 def test():
     subset_train, subset_val = load_gsm8k(3)
 

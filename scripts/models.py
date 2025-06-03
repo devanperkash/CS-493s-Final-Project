@@ -11,8 +11,11 @@ class TeacherModel():
 
     def _run_teacher_model(self, input_text, max_length):
         inputs = self.tokenizer(input_text, return_tensors="pt", padding=True)
-        input_ids = inputs["input_ids"]
+        device = next(self.model.parameters()).device
+        input_ids = inputs["input_ids"].to(device)
         attention_mask = inputs.get("attention_mask", None)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device)
 
         with torch.no_grad():
             outputs = self.model.generate(
@@ -67,17 +70,21 @@ class StudentModel(nn.Module):
 
     def get_student_y_hat(self, input_text, max_length=50):
         inputs = self.tokenizer(input_text, return_tensors="pt", padding=True)
-        input_ids = inputs["input_ids"]
+        device = next(self.parameters()).device
+        input_ids = inputs["input_ids"].to(device)
         
         generated_ids = input_ids
-        all_logits = torch.tensor([])
-        for _ in range(max_length):
-            outputs = self.forward(generated_ids)
-            next_token_logits = outputs[:, -1, :]
-            all_logits = torch.cat([all_logits, next_token_logits[:, None, :]], dim=1)
-            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
-            generated_ids = torch.cat([generated_ids, next_token_id], dim=1)
+        # create an empty tensor of shape (batch_size, 0, vocab_size) on the proper device:
+        B = generated_ids.size(0)
+        V = self.vocab_size
+        all_logits = torch.empty((B, 0, V), device=device)
 
+        for _ in range(max_length):
+            outputs = self.forward(generated_ids)           # (B, cur_len, V), on `device`
+            next_token_logits = outputs[:, -1, :]           # (B, V)
+            all_logits = torch.cat([all_logits, next_token_logits.unsqueeze(1)], dim=1)  # now (B, t, V)
+            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)        # (B, 1)
+            generated_ids = torch.cat([generated_ids, next_token_id.to(device)], dim=1) 
         sequences = generated_ids
         logits = all_logits
 
@@ -85,13 +92,14 @@ class StudentModel(nn.Module):
 
     def generate_text(self, input_text, max_length=50):
         inputs = self.tokenizer(input_text, return_tensors="pt", padding=True)
-        input_ids = inputs["input_ids"]
+        device = next(self.parameters()).device
+        input_ids = inputs["input_ids"].to(device)
         
         generated_ids = input_ids
         for _ in range(max_length):
-            outputs = self.forward(generated_ids)
+            outputs = self.forward(generated_ids)              # on `device`
             next_token_logits = outputs[:, -1, :]
-            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
-            generated_ids = torch.cat([generated_ids, next_token_id], dim=1)
+            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)  # on `device`
+            generated_ids = torch.cat([generated_ids, next_token_id], dim=1)        # stays on `device`
 
         return [self.tokenizer.decode(sequence, skip_special_tokens=True) for sequence in generated_ids]
