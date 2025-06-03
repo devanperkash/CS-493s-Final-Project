@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
 
 def train_student(logits_distillation:bool = False):
     device = get_device()
@@ -32,6 +33,9 @@ def train_student(logits_distillation:bool = False):
     loss_func = nn.KLDivLoss(reduction="batchmean")
     ce_loss_func = nn.CrossEntropyLoss()
     optimizer = optim.Adam(student_model.parameters(), lr=1e-4)
+
+    # Track average loss per epoch for plotting later
+    epoch_losses = []
 
     # Run models
     for epoch in range(5):
@@ -83,6 +87,7 @@ def train_student(logits_distillation:bool = False):
             total_loss += loss.item()
 
         avg_loss = total_loss / len(train_loader)
+        epoch_losses.append(avg_loss)
         print(f"Epoch {epoch}   Avg {'KL' if logits_distillation else 'CE'} loss: {avg_loss:.5f}")
 
         #
@@ -99,8 +104,24 @@ def train_student(logits_distillation:bool = False):
         print("---")
 
         student_model.train()
+    
+    # ── Now plot epoch_losses ──
+    epochs = list(range(1, len(epoch_losses) + 1))
+    plt.figure()
+    plt.plot(epochs, epoch_losses, marker="o", linestyle="-")
+    plt.title("Training Loss Over Epochs")
+    plt.xlabel("Epoch")
+    plt.ylabel(f"Average {'KL' if logits_distillation else 'CE'} Loss")
+    plt.grid(True)
+    plt.show()
+
+    # After all epochs are finished:
+    save_path = "student_model.pt"
+    torch.save(student_model.state_dict(), save_path)
+    print(f"Saved student checkpoint to {save_path}")
+
 def test():
-    subset_train, subset_val = load_gsm8k(3)
+    subset_train, subset_val = load_gsm8k(2000) # Modify number of samples as needed
 
     teacher_model = TeacherModel("deepseek-ai/deepseek-coder-1.3b-base")
     student_model = StudentModel(teacher_model.tokenizer)
@@ -110,7 +131,7 @@ def test():
 
 
 if __name__ == "__main__":
-    #train_student(logits_distillation=True) # logits distillation
-    #train_student(logits_distillation=False) # label distillation
-    test()
+    train_student(logits_distillation=True) # logits distillation
+    # train_student(logits_distillation=False) # label distillation
+    # test()
 

@@ -1,4 +1,4 @@
-torch  # Platform-specific install will be handled separately
+torch            # install per https://pytorch.org
 torchvision
 torchaudio
 transformers
@@ -9,4 +9,8 @@ tqdm
 pandas
 matplotlib
 seaborn
-wandb  # Optional for logging
+wandb            # optional for logging
+matplotlib
+
+# lm-eval-harness (zero-shot HellaSwag, etc.)
+git+https://github.com/EleutherAI/lm-evaluation-harness.git
