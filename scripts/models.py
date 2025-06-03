@@ -60,46 +60,96 @@ class StudentModel(nn.Module):
 
         self.norm = nn.LayerNorm(emb_dim)
         self.output_head = nn.Linear(emb_dim, self.vocab_size)
+    
+    def forward(self, input_ids, attention_mask=None):
+        """
+        input_ids: (B, seq_len) LongTensor of token IDs
+        attention_mask: (B, seq_len) BoolTensor or ByteTensor where 1=keep token, 0=pad
+        """
+        x = self.token_emb(input_ids)  # (B, seq_len, emb_dim)
 
-    def forward(self, input_ids):
-        x = self.token_emb(input_ids)
-        x = self.transformer(x)
-        x = self.norm(x)
-        logits = self.output_head(x)
+        # Create a boolean mask for padding: True where pad, False otherwise
+        #   src_key_padding_mask expects shape (B, seq_len) with True at padded positions
+        if attention_mask is not None:
+            # attention_mask from tokenizer is 1 for real tokens, 0 for padded tokens
+            src_key_padding_mask = (attention_mask == 0)  # True where pad
+        else:
+            src_key_padding_mask = None
+
+        # Pass through TransformerEncoder with padding mask
+        x = self.transformer(x, src_key_padding_mask=src_key_padding_mask)
+        x = self.norm(x)                    # (B, seq_len, emb_dim)
+        logits = self.output_head(x)        # (B, seq_len, vocab_size)
         return logits
 
     def get_student_y_hat(self, input_text, max_length=50):
+        # ── 1) Tokenize and move to device, *including* attention_mask ──
         inputs = self.tokenizer(input_text, return_tensors="pt", padding=True)
         device = next(self.parameters()).device
-        input_ids = inputs["input_ids"].to(device)
-        
-        generated_ids = input_ids
-        # create an empty tensor of shape (batch_size, 0, vocab_size) on the proper device:
+        input_ids = inputs["input_ids"].to(device)                       # (B, prompt_len)
+        attention_mask = inputs.get("attention_mask")                     # (B, prompt_len)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device)
+
+        # ── 2) Initialize generation buffers ──
+        generated_ids = input_ids                                         # (B, cur_len)
+        attn_mask = attention_mask                                        # (B, cur_len)
+
         B = generated_ids.size(0)
         V = self.vocab_size
-        all_logits = torch.empty((B, 0, V), device=device)
+        all_logits = torch.empty((B, 0, V), device=device)                # (B, 0, V)
 
         for _ in range(max_length):
-            outputs = self.forward(generated_ids)           # (B, cur_len, V), on `device`
-            next_token_logits = outputs[:, -1, :]           # (B, V)
-            all_logits = torch.cat([all_logits, next_token_logits.unsqueeze(1)], dim=1)  # now (B, t, V)
-            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)        # (B, 1)
-            generated_ids = torch.cat([generated_ids, next_token_id.to(device)], dim=1) 
-        sequences = generated_ids
-        logits = all_logits
+            # Pass current tokens + mask into forward
+            outputs = self.forward(generated_ids, attention_mask=attn_mask)  # (B, cur_len, V)
+            next_token_logits = outputs[:, -1, :]                            # (B, V)
+
+            all_logits = torch.cat(
+                [all_logits, next_token_logits.unsqueeze(1)], dim=1
+            )  # (B, t+1, V)
+
+            # Greedy choose next token
+            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)  # (B, 1)
+
+            # Append next token ID to generated_ids
+            generated_ids = torch.cat([generated_ids, next_token_id], dim=1)       # (B, cur_len+1)
+
+            # Append “1” (not padded) to attn_mask for each newly generated token
+            if attn_mask is not None:
+                # Make a column of ones: shape (B, 1)
+                new_mask_col = torch.ones((B, 1), device=device, dtype=attn_mask.dtype)
+                attn_mask = torch.cat([attn_mask, new_mask_col], dim=1)            # (B, cur_len+1)
+            else:
+                # If no initial mask was provided, create one of all-ones
+                attn_mask = torch.ones_like(generated_ids, device=device)
+
+        sequences = generated_ids  # (B, prompt_len + max_length)
+        logits = all_logits        # (B, max_length, V)
 
         return sequences, logits
-
+    
     def generate_text(self, input_text, max_length=50):
         inputs = self.tokenizer(input_text, return_tensors="pt", padding=True)
         device = next(self.parameters()).device
-        input_ids = inputs["input_ids"].to(device)
-        
-        generated_ids = input_ids
-        for _ in range(max_length):
-            outputs = self.forward(generated_ids)              # on `device`
-            next_token_logits = outputs[:, -1, :]
-            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)  # on `device`
-            generated_ids = torch.cat([generated_ids, next_token_id], dim=1)        # stays on `device`
+        input_ids = inputs["input_ids"].to(device)                  # (B, prompt_len)
+        attention_mask = inputs.get("attention_mask")                # (B, prompt_len)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device)
 
-        return [self.tokenizer.decode(sequence, skip_special_tokens=True) for sequence in generated_ids]
+        generated_ids = input_ids                                      # (B, cur_len)
+        attn_mask = attention_mask                                    # (B, cur_len)
+
+        for _ in range(max_length):
+            outputs = self.forward(generated_ids, attention_mask=attn_mask)  # (B, cur_len, V)
+            next_token_logits = outputs[:, -1, :]                             # (B, V)
+            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)  # (B, 1)
+
+            generated_ids = torch.cat([generated_ids, next_token_id], dim=1)  # (B, cur_len+1)
+            # Expand mask
+            if attn_mask is not None:
+                new_mask = torch.ones((generated_ids.size(0), 1), device=device, dtype=attn_mask.dtype)
+                attn_mask = torch.cat([attn_mask, new_mask], dim=1)
+            else:
+                attn_mask = torch.ones_like(generated_ids, device=device)
+
+        return [self.tokenizer.decode(seq, skip_special_tokens=True) for seq in generated_ids]
