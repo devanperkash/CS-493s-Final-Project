@@ -14,14 +14,15 @@ def train_student(logits_distillation:bool = False):
     # Load data
     subset_train, subset_val = load_gsm8k(3)
     train_loader = DataLoader(subset_train, batch_size=8, shuffle=True)
-    val_loader   = DataLoader(subset_val,   batch_size=8, shuffle=False)
+    val_loader = DataLoader(subset_val, batch_size=8, shuffle=False)
 
     # Get models set up
-    teacher_model = TeacherModel("deepseek-ai/deepseek-coder-1.3b-base")
+    teacher_model = TeacherModel("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B") #deepseek-ai/deepseek-coder-1.3b-base
     teacher_model.model.to(device)
     teacher_model.model.eval()
 
-    student_model = StudentModel(teacher_model.tokenizer).to(device)
+    student_model = StudentModel(teacher_model.tokenizer)
+    student_model.to(device)
     student_model.train()
 
     print('Vocab length:', len(teacher_model.tokenizer))
@@ -30,7 +31,7 @@ def train_student(logits_distillation:bool = False):
 
     # Prep for training
     T = 1.0  # distillation temperature; can raise to 2.0 or 4.0 for “softer” teacher probs
-    loss_func = nn.KLDivLoss(reduction="batchmean")
+    kl_loss_func = nn.KLDivLoss(reduction="batchmean")
     ce_loss_func = nn.CrossEntropyLoss()
     optimizer = optim.Adam(student_model.parameters(), lr=1e-4)
 
@@ -42,7 +43,7 @@ def train_student(logits_distillation:bool = False):
         total_loss = 0.0
 
         for batch in train_loader:
-            if logits_distillation:
+            if logits_distillation: ### LOGIT DISTILLATION ###
                 # a) Teacher forward (no grads):
                 with torch.no_grad():
                     t_seqs, t_logits = teacher_model.get_teacher_y(batch, max_length=50)
@@ -59,8 +60,8 @@ def train_student(logits_distillation:bool = False):
 
                 teacher_probs    = torch.softmax(t_flat / T, dim=-1).detach()
                 student_logprobs = torch.log_softmax(s_flat / T, dim=-1)
-                loss = loss_func(student_logprobs, teacher_probs) * (T * T)
-            else:
+                loss = kl_loss_func(student_logprobs, teacher_probs) * (T * T)
+            else: ### LABEL DISTILLATION ###
                 # a) Teacher generates token ids (no grads):
                 with torch.no_grad():
                     t_seqs, _ = teacher_model.get_teacher_y(batch, max_length=50)
@@ -109,29 +110,26 @@ def train_student(logits_distillation:bool = False):
     epochs = list(range(1, len(epoch_losses) + 1))
     plt.figure()
     plt.plot(epochs, epoch_losses, marker="o", linestyle="-")
-    plt.title("Training Loss Over Epochs")
+    plt.title(f"Training Loss Over Epochs ({'LOGIT' if logits_distillation else 'LABEL'})")
     plt.xlabel("Epoch")
     plt.ylabel(f"Average {'KL' if logits_distillation else 'CE'} Loss")
     plt.grid(True)
     plt.show()
 
     # After all epochs are finished:
-    save_path = "student_model.pt"
+    save_path = "models/student_model.pt"
     torch.save(student_model.state_dict(), save_path)
     print(f"Saved student checkpoint to {save_path}")
 
 def test():
-    subset_train, subset_val = load_gsm8k(2000) # Modify number of samples as needed
-
     teacher_model = TeacherModel("deepseek-ai/deepseek-coder-1.3b-base")
-    student_model = StudentModel(teacher_model.tokenizer)
-    z = teacher_model.generate_text(["What is your name?", "What is 9+9?"])
-    print(z)
+    massq = " Lorem ipsum a wy do we more tokens more to"
+    print(teacher_model.generate_text([massq, "hello 2"], max_length=50))
 
 
 
 if __name__ == "__main__":
-    train_student(logits_distillation=True) # logits distillation
+    test()
+    #train_student(logits_distillation=True) # logits distillation
     # train_student(logits_distillation=False) # label distillation
-    # test()
 
