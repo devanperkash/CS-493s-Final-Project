@@ -1,10 +1,10 @@
-torch            # install per https://pytorch.org
-torchvision
-torchaudio
+#torch            # install per https://pytorch.org
+#torchvision
+#torchaudio
 transformers
 datasets
 evaluate
-sentencepiece
+#sentencepiece
 tqdm
 pandas
 matplotlib

@@ -24,7 +24,9 @@ class TeacherModel():
                 max_new_tokens=max_length,
                 num_return_sequences=1,
                 output_scores=True,
-                return_dict_in_generate=True
+                return_dict_in_generate=True,
+                pad_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=self.tokenizer.eos_token_id
             )
         sequences = outputs['sequences']
         logits = outputs['scores']
@@ -48,6 +50,8 @@ class StudentModel(nn.Module):
         self.vocab_size = len(teacher_tokenizer)
         self.token_emb = nn.Embedding(self.vocab_size, emb_dim)
         self.tokenizer = teacher_tokenizer
+
+        self.eos_token_id = teacher_tokenizer.eos_token_id
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=emb_dim,
@@ -138,11 +142,21 @@ class StudentModel(nn.Module):
 
         generated_ids = input_ids                                      # (B, cur_len)
         attn_mask = attention_mask                                    # (B, cur_len)
+        B = input_ids.size(0)
+        finished = torch.zeros(B, dtype=torch.bool, device=device)
 
         for _ in range(max_length):
             outputs = self.forward(generated_ids, attention_mask=attn_mask)  # (B, cur_len, V)
             next_token_logits = outputs[:, -1, :]                             # (B, V)
+            next_token_logits = next_token_logits / 1.5
+            for b in range(generated_ids.size(0)):
+                for prev_token in generated_ids[b].tolist():
+                    next_token_logits[b, prev_token] /= 1.2
             next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)  # (B, 1)
+
+            finished |= (next_token_id.squeeze(-1) == self.eos_token_id)
+            if finished.all():
+                break
 
             generated_ids = torch.cat([generated_ids, next_token_id], dim=1)  # (B, cur_len+1)
             # Expand mask
